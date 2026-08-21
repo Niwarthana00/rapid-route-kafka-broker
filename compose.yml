@@ -1,0 +1,100 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.9.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - kafka-network
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kafka-init:
+    image: confluentinc/cp-zookeeper:7.9.0
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    networks:
+      - kafka-network
+    entrypoint:
+      - sh
+      - -c
+      - |
+          echo 'Clearing stale Kafka broker registration...'
+          zookeeper-shell zookeeper:2181 rmr /brokers/ids/1 || true
+          echo 'Done.'
+
+  kafka:
+    image: confluentinc/cp-kafka:7.9.0
+    hostname: kafka
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      zookeeper:
+        condition: service_healthy
+    restart: on-failure
+    ports:
+      - "9092:9092"
+    networks:
+      - kafka-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ENABLE_KRAFT: 'false'
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://host.docker.internal:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:29092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  kafka-connect:
+    image: debezium/connect:2.7.3.Final
+    hostname: kafka-connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    networks:
+      - kafka-network
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: debezium-connect-group
+      CONFIG_STORAGE_TOPIC: debezium_configs
+      OFFSET_STORAGE_TOPIC: debezium_offsets
+      STATUS_STORAGE_TOPIC: debezium_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8083/connectors"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+networks:
+  kafka-network:
+    driver: bridge
+
+volumes:
+  zookeeper-data:
+  zookeeper-log:
+  kafka-data:
